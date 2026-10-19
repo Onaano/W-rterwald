@@ -314,6 +314,7 @@ body.nosound .spk{display:none}
   <div class="head"><div><p class="pl">Wörterwald</p><h2 id="help-t">So funktioniert das Spiel</h2></div></div>
   <p class="ask">Löse in jeder Runde 8 Aufgaben richtig. Dann hast du den Wörterwald erkundet. Es gibt keine Zeit und keine Punkte. Tippe auf den Lautsprecher, um Wörter zu hören.</p>
   <div class="hgrid" id="help-grid"></div>
+  <div class="ask" id="snd-help"><b>Kein Ton?</b> Prüfe die Lautstärke und den Stumm-Schalter (bei iPhone und iPad seitlich am Gerät). Ein aktueller Browser (Chrome, Edge oder Safari) und eine deutsche Stimme in den Geräteeinstellungen helfen. <button id="btn-test" class="btn sec" type="button">Ton testen</button> <small id="voice-info"></small></div>
   <button id="help-close" class="btn pri cancel" type="button">Schließen</button>
 </div></div>
 <script>
@@ -1010,10 +1011,45 @@ let voices=[];
 function loadVoices(){ try{ voices = window.speechSynthesis.getVoices()||[]; }catch(e){ voices=[]; } }
 function speechOk(){ try{ return 'speechSynthesis' in window && typeof window.SpeechSynthesisUtterance!=='undefined' && !!window.speechSynthesis; }catch(e){ return false; } }
 function soundActive(){ return state.sound && speechOk(); }
-function mkUtter(text){ const u=new SpeechSynthesisUtterance(text); u.lang='de-DE'; u.rate=.8; u.pitch=1; const v=voices.find(v=>/^de[-_]/i.test(v.lang)) || voices.find(v=>/^de/i.test(v.lang)); if(v) u.voice=v; return u; }
-function say(text){ if(!soundActive()) return; try{ const s=window.speechSynthesis; s.cancel(); s.speak(mkUtter(text)); }catch(e){} }
-function sayList(list){ if(!soundActive()) return; try{ const s=window.speechSynthesis; s.cancel(); list.forEach(t=>s.speak(mkUtter(t))); }catch(e){} }
-function stopSay(){ try{ if(speechOk()) window.speechSynthesis.cancel(); }catch(e){} }
+function germanVoice(){ return voices.find(v=>/^de[-_]/i.test(v.lang)) || voices.find(v=>/^de/i.test(v.lang)) || null; }
+function mkUtter(text, noVoice){ const u=new SpeechSynthesisUtterance(text); u.lang='de-DE'; u.rate=.8; u.pitch=1; u.volume=1; if(!noVoice){ const v=germanVoice(); if(v){ u.voice=v; u.lang=v.lang; } } return u; }
+/* Robust gegen bekannte Browser-Eigenheiten: kurze Pause nach cancel(), resume(), Utterances festhalten (sonst räumt Chrome sie ab),
+   Wächter: startet nichts, wird einmal ohne Stimmenobjekt neu versucht; danach kommt ein freundlicher Hinweis. */
+let uKeep=[], spkSeq=0, spkWatch=null, spkStarted=false, spkFailShown=false, spkEver=false;
+function speechFail(){
+  if(spkFailShown || spkEver) return; spkFailShown=true;
+  try{ if(state.inGame) setFb('hint','Kein Ton?','Prüfe die Lautstärke und den Stumm-Schalter. Manche Geräte haben keine deutsche Stimme. Die Wörter stehen auch auf dem Bildschirm.'); }catch(e){}
+}
+function speakList(list){
+  const s=window.speechSynthesis; const seq=++spkSeq; spkStarted=false; clearTimeout(spkWatch);
+  try{ s.cancel(); }catch(e){}
+  setTimeout(()=>{
+    if(seq!==spkSeq) return;
+    try{ s.resume(); }catch(e){}
+    const go=(noVoice)=>{
+      list.forEach((t,i)=>{
+        const u=mkUtter(t,noVoice); uKeep.push(u); if(uKeep.length>24) uKeep.shift();
+        u.onstart=()=>{ spkStarted=true; spkEver=true; clearTimeout(spkWatch); };
+        u.onerror=ev=>{ const er=ev&&ev.error; if(er==='interrupted'||er==='canceled') return; if(!spkStarted) speechFail(); };
+        try{ s.speak(u); }catch(e){}
+      });
+    };
+    go(false);
+    spkWatch=setTimeout(()=>{
+      if(seq!==spkSeq||spkStarted) return;
+      try{ s.cancel(); s.resume(); }catch(e){}
+      setTimeout(()=>{ if(seq!==spkSeq) return; go(true);
+        spkWatch=setTimeout(()=>{ if(seq===spkSeq && !spkStarted) speechFail(); },2200); },80);
+    },1400);
+  },70);
+}
+function say(text){ if(!soundActive()) return; try{ speakList([text]); }catch(e){} }
+function sayList(list){ if(!soundActive()) return; try{ speakList(list); }catch(e){} }
+function stopSay(){ try{ if(speechOk()){ spkSeq++; clearTimeout(spkWatch); window.speechSynthesis.cancel(); } }catch(e){} }
+/* Erste Berührung: Sprachausgabe „freischalten“ (iOS/Safari verlangen das), lautlos */
+(function(){ function unlock(){ try{ if(!speechOk()) return; const u=new SpeechSynthesisUtterance(' '); u.volume=0; u.lang='de-DE'; window.speechSynthesis.speak(u); }catch(e){} }
+  document.addEventListener('pointerdown',unlock,{once:true,capture:true}); document.addEventListener('keydown',unlock,{once:true,capture:true}); })();
+function voiceInfo(){ const n=voices.length, d=voices.filter(v=>/^de/i.test(v.lang)).length; return speechOk()?`Sprachausgabe: ${n} Stimmen gefunden, davon ${d} deutsche.`:'Sprachausgabe: in diesem Browser nicht verfügbar.'; }
 if(speechOk()){ loadVoices(); try{ window.speechSynthesis.addEventListener('voiceschanged',loadVoices); }catch(e){} }
 function applySound(){
   ['btn-sound','btn-sound2'].forEach(id=>{
@@ -1081,6 +1117,7 @@ function openHelp(){
   lastFocus = document.activeElement;
   const g=$('help-grid'); g.innerHTML='';
   HELP.forEach(h=>{ const c=el('div','hcard'); c.innerHTML=`<h3>${h.title}</h3><p class="alt">${h.alt}</p>${h.text.map(t=>`<p>${t}</p>`).join('')}${h.ex.length?`<div class="exs">${h.ex.map(x=>`<span>${x}</span>`).join('')}</div>`:''}`; g.appendChild(c); });
+  const vi=$('voice-info'); if(vi) vi.textContent=voiceInfo(); const tb=$('btn-test'); if(tb) tb.hidden=!speechOk();
   $('dlg-help').hidden=false; $('help-close').focus();
 }
 function closeHelp(){ $('dlg-help').hidden=true; if(lastFocus&&document.contains(lastFocus)) lastFocus.focus(); }
@@ -1319,6 +1356,7 @@ function init(){
   buildStart(); applySound(); $('btn-help').innerHTML=HELP_ICON; $('btn-help2').innerHTML=HELP_ICON;
   $('btn-sound').addEventListener('click',toggleSound); $('btn-sound2').addEventListener('click',toggleSound);
   $('btn-help').addEventListener('click',openHelp); $('btn-help2').addEventListener('click',openHelp);
+  $('btn-test').addEventListener('click',()=>{ if(!speechOk()) return; const vi=$('voice-info'); vi.textContent='…'; speakList(['Hallo! Ich bin im Wörterwald.']); setTimeout(()=>{ vi.textContent = spkStarted ? 'Ton wurde gestartet. '+voiceInfo() : 'Es kam kein Ton an. '+voiceInfo()+' Prüfe Lautstärke und deutsche Stimme.'; },2800); });
   $('help-close').addEventListener('click',closeHelp); $('lvl-cancel').addEventListener('click',()=>closeLevel(false));
   $('dlg-level').addEventListener('click',e=>{ if(e.target===$('dlg-level')) closeLevel(false); });
   $('dlg-help').addEventListener('click',e=>{ if(e.target===$('dlg-help')) closeHelp(); });
